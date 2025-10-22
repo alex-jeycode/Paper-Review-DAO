@@ -207,3 +207,165 @@
     (ok review-id)
   )
 )
+
+(define-public (evaluate-review (review-id uint) (quality-score uint))
+  (let
+    (
+      (review-data (unwrap! (get-review review-id) err-not-found))
+      (paper-data (unwrap! (get-paper (get paper-id review-data)) err-not-found))
+      (review-age (- stacks-block-height (get submitted-block review-data)))
+      (current-totals (get-review-quality review-id))
+    )
+    (asserts! (<= quality-score u100) err-invalid-params)
+    (asserts! (>= review-age review-period-blocks) err-evaluation-period-active)
+    (asserts! (< review-age (+ review-period-blocks evaluation-period-blocks)) err-review-closed)
+    (asserts! (not (is-eq tx-sender (get reviewer review-data))) err-unauthorized)
+    
+    (map-set quality-evaluations
+      { review-id: review-id, evaluator: tx-sender }
+      { quality-score: quality-score }
+    )
+    
+    (match current-totals
+      totals
+        (map-set review-quality-totals
+          { review-id: review-id }
+          {
+            total-score: (+ (get total-score totals) quality-score),
+            evaluation-count: (+ (get evaluation-count totals) u1)
+          }
+        )
+      (map-set review-quality-totals
+        { review-id: review-id }
+        {
+          total-score: quality-score,
+          evaluation-count: u1
+        }
+      )
+    )
+    (ok true)
+  )
+)
+
+(define-public (finalize-review (review-id uint))
+  (let
+    (
+      (review-data (unwrap! (get-review review-id) err-not-found))
+      (quality-data (unwrap! (get-review-quality review-id) err-not-found))
+      (average-quality (/ (get total-score quality-data) (get evaluation-count quality-data)))
+      (reviewer (get reviewer review-data))
+      (stake-amount (get stake-amount review-data))
+      (reviewer-rep (unwrap! (get-reviewer-reputation reviewer) err-not-found))
+      (review-age (- stacks-block-height (get submitted-block review-data)))
+    )
+    (asserts! (not (get stake-returned review-data)) err-invalid-params)
+    (asserts! (>= review-age (+ review-period-blocks evaluation-period-blocks)) err-evaluation-period-active)
+    (asserts! (> (get evaluation-count quality-data) u0) err-invalid-params)
+    
+    (map-set reviews
+      { review-id: review-id }
+      (merge review-data {
+        quality-score: average-quality,
+        stake-returned: true
+      })
+    )
+    
+    (if (>= average-quality u60)
+      (begin
+        (try! (as-contract (stx-transfer? stake-amount tx-sender reviewer)))
+        (map-set reviewer-reputation
+          { reviewer: reviewer }
+          (merge reviewer-rep {
+            average-quality: (/ (+ (* (get average-quality reviewer-rep) (- (get total-reviews reviewer-rep) u1)) average-quality) (get total-reviews reviewer-rep)),
+            total-stake-earned: (+ (get total-stake-earned reviewer-rep) stake-amount)
+          })
+        )
+        (ok true)
+      )
+      (begin
+        (map-set reviewer-reputation
+          { reviewer: reviewer }
+          (merge reviewer-rep {
+            average-quality: (/ (+ (* (get average-quality reviewer-rep) (- (get total-reviews reviewer-rep) u1)) average-quality) (get total-reviews reviewer-rep)),
+            total-stake-lost: (+ (get total-stake-lost reviewer-rep) stake-amount)
+          })
+        )
+        (ok false)
+      )
+    )
+  )
+)
+
+(define-public (close-paper-review (paper-id uint))
+  (let
+    (
+      (paper-data (unwrap! (get-paper paper-id) err-not-found))
+    )
+    (asserts! (is-eq (get author paper-data) tx-sender) err-unauthorized)
+    (asserts! (>= (- stacks-block-height (get submitted-block paper-data)) (+ review-period-blocks evaluation-period-blocks)) err-evaluation-period-active)
+    
+    (map-set papers
+      { paper-id: paper-id }
+      (merge paper-data { status: status-completed })
+    )
+    (ok true)
+  )
+)
+
+;; New public helper: tip a reviewer for a specific review
+(define-public (tip-reviewer (review-id uint) (amount uint))
+  (let (
+          (review-data (unwrap! (get-review review-id) err-not-found))
+          (reviewer (get reviewer review-data))
+        )
+    (asserts! (> amount u0) err-invalid-params)
+    ;; transfer STX from sender to reviewer
+    (try! (stx-transfer? amount tx-sender reviewer))
+    (ok true)
+  )
+)
+
+;; Allow reviewer to withdraw their stake after it has been returned
+(define-public (withdraw-stake (review-id uint))
+  (let (
+          (review-data (unwrap! (get-review review-id) err-not-found))
+          (reviewer (get reviewer review-data))
+          (stake-amount (get stake-amount review-data))
+        )
+    (asserts! (is-eq tx-sender reviewer) err-unauthorized)
+    (asserts! (get stake-returned review-data) err-invalid-params)
+    ;; transfer the staked amount from contract to reviewer
+    (try! (as-contract (stx-transfer? stake-amount (as-contract tx-sender) reviewer)))
+    (ok true)
+  )
+)
+
+;; Allow reviewer to rescind their review before any evaluations and before stake is locked
+(define-public (rescind-review (review-id uint))
+  (let (
+          (review-data (unwrap! (get-review review-id) err-not-found))
+          (reviewer (get reviewer review-data))
+          (submitted (get submitted-block review-data))
+          (age (- stacks-block-height submitted))
+        )
+    (asserts! (is-eq tx-sender reviewer) err-unauthorized)
+    ;; only allow rescind during review period and before any evaluations
+    (asserts! (< age review-period-blocks) err-review-closed)
+    (asserts! (not (get stake-returned review-data)) err-invalid-params)
+    ;; remove mapping entries and return stake to reviewer
+    (map-delete reviews { review-id: review-id })
+    (map-delete paper-reviews { paper-id: (get paper-id review-data), reviewer: reviewer })
+    (try! (as-contract (stx-transfer? (get stake-amount review-data) (as-contract tx-sender) reviewer)))
+    ;; decrement paper review-count and total-stake
+    (let ((paper-data (unwrap! (get-paper (get paper-id review-data)) err-not-found)))
+      (map-set papers
+        { paper-id: (get paper-id review-data) }
+        (merge paper-data {
+          review-count: (- (get review-count paper-data) u1),
+          total-stake: (- (get total-stake paper-data) (get stake-amount review-data))
+        })
+      )
+    )
+    (ok true)
+  )
+)
