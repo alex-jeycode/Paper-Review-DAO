@@ -80,3 +80,43 @@
     evaluation-count: uint
   }
 )
+
+;; Read-only functions
+(define-read-only (get-paper (paper-id uint))
+  (map-get? papers { paper-id: paper-id })
+)
+
+(define-read-only (get-review (review-id uint))
+  (map-get? reviews { review-id: review-id })
+)
+
+(define-read-only (get-reviewer-reputation (reviewer principal))
+  (map-get? reviewer-reputation { reviewer: reviewer })
+)
+
+(define-read-only (has-reviewed (paper-id uint) (reviewer principal))
+  (is-some (map-get? paper-reviews { paper-id: paper-id, reviewer: reviewer }))
+)
+
+(define-read-only (get-review-quality (review-id uint))
+  (map-get? review-quality-totals { review-id: review-id })
+)
+
+;; New read-only helpers
+(define-read-only (get-paper-stats (paper-id uint))
+  ;; Returns optional map with review-count and total-stake for a paper
+  (match (map-get? papers { paper-id: paper-id })
+    paper
+      (ok { review-count: (get review-count paper), total-stake: (get total-stake paper) })
+    (err err-not-found)
+  )
+)
+
+(define-read-only (get-review-stake (review-id uint))
+  ;; Returns the stake amount and whether stake has been returned for a review
+  (match (map-get? reviews { review-id: review-id })
+    r
+      (ok { stake-amount: (get stake-amount r), stake-returned: (get stake-returned r) })
+    (err err-not-found)
+  )
+)
