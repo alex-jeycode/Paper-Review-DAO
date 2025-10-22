@@ -26,3 +26,57 @@
 (define-data-var next-paper-id uint u0)
 (define-data-var next-review-id uint u0)
 
+;; Data Maps
+(define-map papers
+  { paper-id: uint }
+  {
+    author: principal,
+    title: (string-ascii 100),
+    content-hash: (string-ascii 64),
+    submitted-block: uint,
+    status: uint,
+    review-count: uint,
+    total-stake: uint
+  }
+)
+
+(define-map reviews
+  { review-id: uint }
+  {
+    paper-id: uint,
+    reviewer: principal,
+    submitted-block: uint,
+    review-hash: (string-ascii 64),
+    stake-amount: uint,
+    quality-score: uint,
+    stake-returned: bool
+  }
+)
+
+(define-map paper-reviews
+  { paper-id: uint, reviewer: principal }
+  { review-id: uint }
+)
+
+(define-map reviewer-reputation
+  { reviewer: principal }
+  {
+    total-reviews: uint,
+    average-quality: uint,
+    total-stake-earned: uint,
+    total-stake-lost: uint
+  }
+)
+
+(define-map quality-evaluations
+  { review-id: uint, evaluator: principal }
+  { quality-score: uint }
+)
+
+(define-map review-quality-totals
+  { review-id: uint }
+  {
+    total-score: uint,
+    evaluation-count: uint
+  }
+)
