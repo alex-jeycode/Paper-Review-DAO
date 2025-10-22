@@ -120,3 +120,90 @@
     (err err-not-found)
   )
 )
+
+;; Public functions
+;; #[allow(unchecked_data)]
+(define-public (submit-paper (title (string-ascii 100)) (content-hash (string-ascii 64)))
+  (let
+    (
+      (paper-id (var-get next-paper-id))
+    )
+    (map-set papers
+      { paper-id: paper-id }
+      {
+        author: tx-sender,
+        title: title,
+        content-hash: content-hash,
+        submitted-block: stacks-block-height,
+        status: status-open,
+        review-count: u0,
+        total-stake: u0
+      }
+    )
+    (var-set next-paper-id (+ paper-id u1))
+    (ok paper-id)
+  )
+)
+
+;; #[allow(unchecked_data)]
+(define-public (submit-review (paper-id uint) (review-hash (string-ascii 64)) (stake-amount uint))
+  (let
+    (
+      (paper-data (unwrap! (get-paper paper-id) err-not-found))
+      (review-id (var-get next-review-id))
+      (current-reputation (get-reviewer-reputation tx-sender))
+    )
+    (asserts! (>= stake-amount min-reviewer-stake) err-insufficient-stake)
+    (asserts! (not (has-reviewed paper-id tx-sender)) err-already-reviewed)
+    (asserts! (< (- stacks-block-height (get submitted-block paper-data)) review-period-blocks) err-review-closed)
+    
+    (try! (stx-transfer? stake-amount tx-sender (as-contract tx-sender)))
+    
+    (map-set reviews
+      { review-id: review-id }
+      {
+        paper-id: paper-id,
+        reviewer: tx-sender,
+        submitted-block: stacks-block-height,
+        review-hash: review-hash,
+        stake-amount: stake-amount,
+        quality-score: u0,
+        stake-returned: false
+      }
+    )
+    
+    (map-set paper-reviews
+      { paper-id: paper-id, reviewer: tx-sender }
+      { review-id: review-id }
+    )
+    
+    (map-set papers
+      { paper-id: paper-id }
+      (merge paper-data {
+        review-count: (+ (get review-count paper-data) u1),
+        total-stake: (+ (get total-stake paper-data) stake-amount),
+        status: status-under-review
+      })
+    )
+    
+    (match current-reputation
+      rep
+        (map-set reviewer-reputation
+          { reviewer: tx-sender }
+          (merge rep { total-reviews: (+ (get total-reviews rep) u1) })
+        )
+      (map-set reviewer-reputation
+        { reviewer: tx-sender }
+        {
+          total-reviews: u1,
+          average-quality: u0,
+          total-stake-earned: u0,
+          total-stake-lost: u0
+        }
+      )
+    )
+    
+    (var-set next-review-id (+ review-id u1))
+    (ok review-id)
+  )
+)
